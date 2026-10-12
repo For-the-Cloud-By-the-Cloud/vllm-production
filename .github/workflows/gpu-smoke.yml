@@ -9,14 +9,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
       - run: nvidia-smi
       - run: pip install vllm
-      - name: Serve and test
+      - name: Serve, test and benchmark
         run: |
-          vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 4096 > vllm.log 2>&1 &
+          MODEL=Qwen/Qwen2.5-1.5B-Instruct
+          vllm serve $MODEL --dtype half --max-model-len 4096 > vllm.log 2>&1 &
           for i in $(seq 1 60); do curl -sf localhost:8000/health && break; sleep 10; done
-          curl -sf localhost:8000/v1/completions -H 'Content-Type: application/json' \
-            -d '{"model":"Qwen/Qwen2.5-1.5B-Instruct","prompt":"Hello","max_tokens":16}'
+          curl -sf localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+            -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one sentence.\"}],\"max_tokens\":32}"
+          mkdir -p results
+          for c in 1 8 32; do
+            vllm bench serve --model $MODEL --dataset-name random \
+              --random-input-len 512 --random-output-len 128 \
+              --num-prompts 100 --max-concurrency $c \
+              --save-result --result-dir results --result-filename t4-c$c.json
+          done
       - name: Show vLLM log
         if: always()
         run: tail -n 100 vllm.log || true
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t4-benchmark
+          path: results/
